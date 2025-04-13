@@ -45,7 +45,7 @@ class Strategy:
     
     def __init__(self, rsi_period=14, rsi_overbought=70, rsi_oversold=30, atr_period=14, 
                  atr_multiplier=2.0, risk_pct=1.0, adx_period=14, adx_threshold=25, 
-                 ema_short=20, ema_long=50, atr_threshold_pct=0.5, bb_period=20, bb_std=2.0):
+                 ema_short=5, ema_long=9, atr_threshold_pct=0.5, bb_period=20, bb_std=2.0):
         """
         Initialize the strategy with customizable parameters.
         
