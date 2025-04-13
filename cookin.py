@@ -120,7 +120,7 @@ class Strategy:
         """
         # Calculate fast and slow moving averages
         df["fast_ma"] = ta.SMA(df["close"], timeperiod=10)
-        df["slow_ma"] = ta.SMA(df["close"], timeperiod=50)
+        df["slow_ma"] = ta.SMA(df["close"], timeperiod=20)
         
         # Calculate RSI
         df["rsi"] = ta.RSI(df["close"], timeperiod=self.rsi_period)
