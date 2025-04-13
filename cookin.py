@@ -26,18 +26,18 @@ class TradeType(Enum):
 
 class Strategy:
     """
-    A trading strategy based on EMA (Exponential Moving Average) crossover with RSI (Relative Strength Index) filter.
+    A trading strategy based on SMA (Simple Moving Average) crossover with RSI (Relative Strength Index) filter.
     
     This strategy generates trading signals by:
-    1. Identifying bullish and bearish EMA crossovers
+    1. Identifying bullish and bearish SMA crossovers
     2. Filtering signals using RSI overbought/oversold conditions
     3. Setting stop losses based on ATR (Average True Range)
     4. Calculating appropriate position sizes based on risk management rules
     5. Detecting and avoiding choppy market conditions
     
     The strategy is designed to:
-    - Go long when the fast EMA crosses above the slow EMA (and RSI is not overbought)
-    - Go short when the fast EMA crosses below the slow EMA (and RSI is not oversold)
+    - Go long when the fast MA crosses above the slow MA (and RSI is not overbought)
+    - Go short when the fast MA crosses below the slow MA (and RSI is not oversold)
     - Exit positions on opposing crossovers or extreme RSI values
     - Implement stop losses based on ATR
     - Avoid trading in sideways or choppy market conditions
@@ -45,7 +45,7 @@ class Strategy:
     
     def __init__(self, rsi_period=14, rsi_overbought=70, rsi_oversold=30, atr_period=14, 
                  atr_multiplier=2.0, risk_pct=1.0, adx_period=14, adx_threshold=25, 
-                 ema_short=9, ema_long=21, atr_threshold_pct=0.5, bb_period=20, bb_std=2.0):
+                 ema_short=5, ema_long=9, atr_threshold_pct=0.5, bb_period=20, bb_std=2.0):
         """
         Initialize the strategy with customizable parameters.
         
@@ -58,8 +58,8 @@ class Strategy:
             risk_pct (float): Risk percentage per trade of total equity (default: 1.0%)
             adx_period (int): Period for ADX calculation (default: 14 days)
             adx_threshold (float): ADX threshold for trend strength (default: 25)
-            ema_short (int): Period for short EMA calculation (default: 9)
-            ema_long (int): Period for long EMA calculation (default: 21)
+            ema_short (int): Period for short EMA calculation (default: 20)
+            ema_long (int): Period for long EMA calculation (default: 50)
             atr_threshold_pct (float): Minimum ATR as percentage of price for trading (default: 0.5%)
             bb_period (int): Period for Bollinger Bands calculation (default: 20)
             bb_std (float): Standard deviation for Bollinger Bands (default: 2.0)
@@ -105,7 +105,7 @@ class Strategy:
         Calculate technical indicators required for the strategy.
         
         This method computes the following indicators:
-        - Fast and slow Exponential Moving Averages (EMA)
+        - Fast and slow Simple Moving Averages (SMA)
         - Relative Strength Index (RSI)
         - Average True Range (ATR) for stop loss calculation
         - EMAs for trend detection
@@ -118,9 +118,9 @@ class Strategy:
         Returns:
             pd.DataFrame: The input dataframe augmented with calculated indicators
         """
-        # Calculate fast and slow exponential moving averages
-        df["fast_ma"] = ta.EMA(df["close"], timeperiod=self.ema_short)
-        df["slow_ma"] = ta.EMA(df["close"], timeperiod=self.ema_long)
+        # Calculate fast and slow moving averages
+        df["fast_ma"] = ta.SMA(df["close"], timeperiod=10)
+        df["slow_ma"] = ta.SMA(df["close"], timeperiod=50)
         
         # Calculate RSI
         df["rsi"] = ta.RSI(df["close"], timeperiod=self.rsi_period)
@@ -223,7 +223,7 @@ class Strategy:
         """
         Generate trading signals based on calculated indicators.
         
-        This method identifies entry and exit points for trades based on EMA crossovers and RSI conditions,
+        This method identifies entry and exit points for trades based on SMA crossovers and RSI conditions,
         while avoiding choppy market conditions.
         It also sets stop loss prices and calculates position sizes.
         
