@@ -1,0 +1,101 @@
+//@version=6
+strategy("RSI and SMA Crossover Strategy", overlay=true, 
+         default_qty_type = strategy.percent_of_equity, 
+         default_qty_value = 10, 
+         initial_capital = 100000)
+
+// RSI inputs
+length = input(14, title="RSI Length")
+overSold = input(30, title="RSI Oversold")
+overBought = input(70, title="RSI Overbought")
+
+// SMA inputs
+smaFastLength = input(50, title="Fast SMA Length")
+smaSlowLength = input(200, title="Slow SMA Length")
+
+// Risk management inputs
+stopLossPercent = input.float(2.0, title="Stop Loss (%)", minval=0.1, step=0.1)
+takeProfitPercent = input.float(5.0, title="Take Profit (%)", minval=0.1, step=0.1)
+useATRForStopLoss = input.bool(false, title="Use ATR for Stop Loss")
+atrLength = input.int(14, title="ATR Length", minval=1)
+atrMultiplier = input.float(3.0, title="ATR Multiplier", minval=0.1, step=0.1)
+riskPerTradePercent = input.float(1.0, title="Risk Per Trade (%)", minval=0.1, maxval=100.0, step=0.1)
+maxPositionsAllowed = input.int(3, title="Max Positions Allowed", minval=1)
+pyramidingEnabled = input.bool(false, title="Enable Pyramiding")
+pyramidingMaxPositions = input.int(3, title="Max Pyramiding Positions", minval=1)
+
+// Position management
+allowMultipleEntries = input.bool(false, title="Allow Multiple Entries")
+closeOnOppositeSignal = input.bool(true, title="Close Position on Opposite Signal")
+
+// Price and indicator calculations
+price = close
+vrsi = ta.rsi(price, length)
+
+// Calculate SMAs
+smaFast = ta.sma(price, smaFastLength)
+smaSlow = ta.sma(price, smaSlowLength)
+
+// Calculate ATR for dynamic stop loss
+atr = ta.atr(atrLength)
+
+// Plot SMAs
+plot(smaFast, title="SMA Fast", color=color.blue, linewidth=1)
+plot(smaSlow, title="SMA Slow", color=color.red, linewidth=1)
+
+// RSI strategy conditions
+co = ta.crossover(vrsi, overSold)
+cu = ta.crossunder(vrsi, overBought)
+
+// SMA crossover conditions
+smaBullish = ta.crossover(smaFast, smaSlow)
+smaBearish = ta.crossunder(smaFast, smaSlow)
+
+// Position sizing calculations
+accountEquity = strategy.equity
+priceRange = useATRForStopLoss ? (atr * atrMultiplier) : (price * stopLossPercent / 100)
+positionSize = 0.0
+
+// Determine current number of open positions
+openPositions = math.abs(strategy.position_size) > 0 ? 1 : 0
+
+// Execute strategies
+if (not na(vrsi))
+    // Long entry conditions
+    longCondition = co or smaBullish
+    
+    // Short entry conditions
+    shortCondition = cu or smaBearish
+    
+    // Calculate stop loss and take profit levels
+    longStopLevel = useATRForStopLoss ? price * (1 - atr * atrMultiplier / price) : price * (1 - stopLossPercent / 100)
+    longTakeLevel = price * (1 + takeProfitPercent / 100)
+    
+    shortStopLevel = useATRForStopLoss ? price * (1 + atr * atrMultiplier / price) : price * (1 + stopLossPercent / 100)
+    shortTakeLevel = price * (1 - takeProfitPercent / 100)
+    
+    // Calculate position size based on risk per trade
+    if (longCondition and (openPositions < maxPositionsAllowed or (pyramidingEnabled and openPositions < pyramidingMaxPositions)))
+        riskAmount = accountEquity * (riskPerTradePercent / 100)
+        positionSize = riskAmount / (price - longStopLevel)
+        positionSizePercent = (positionSize * price / accountEquity) * 100
+        if (allowMultipleEntries or strategy.position_size <= 0)
+            strategy.entry("Long", strategy.long, qty=positionSize, comment=co ? "RSI Long" : "SMA Long")
+        strategy.exit("Long TP/SL", "Long", stop=longStopLevel, limit=longTakeLevel)
+        
+        // Close opposite positions if enabled
+        if (closeOnOppositeSignal and strategy.position_size < 0)
+            strategy.close("Short", comment="Close Short")
+    
+    if (shortCondition and (openPositions < maxPositionsAllowed or (pyramidingEnabled and openPositions < pyramidingMaxPositions)))
+        riskAmount = accountEquity * (riskPerTradePercent / 100)
+        positionSize = riskAmount / (shortStopLevel - price)
+        positionSizePercent = (positionSize * price / accountEquity) * 100
+        if (allowMultipleEntries or strategy.position_size >= 0)
+            strategy.entry("Short", strategy.short, qty=positionSize, comment=cu ? "RSI Short" : "SMA Short")
+        strategy.exit("Short TP/SL", "Short", stop=shortStopLevel, limit=shortTakeLevel)
+        
+        // Close opposite positions if enabled
+        if (closeOnOppositeSignal and strategy.position_size > 0)
+            strategy.close("Long", comment="Close Long")
+
