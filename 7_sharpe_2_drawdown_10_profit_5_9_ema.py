@@ -50,7 +50,7 @@ class Strategy:
         Initialize the strategy with customizable parameters.
         
         Parameters:
-            rsi_period (int): Period for RSI calculation (default: 14 days)
+            rsi_period (int): Peri              od for RSI calculation (default: 14 days)
             rsi_overbought (float): RSI threshold for overbought condition (default: 70)
             rsi_oversold (float): RSI threshold for oversold condition (default: 30)
             atr_period (int): Period for ATR calculation (default: 14 days)

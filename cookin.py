@@ -26,117 +26,87 @@ class TradeType(Enum):
 
 class Strategy:
     """
-    A trading strategy based on SMA (Simple Moving Average) crossover with RSI (Relative Strength Index) filter.
+    A high-profit trading strategy combining powerful trend filtering, dip buying, 
+    and impulse control for optimal entries and exits.
     
     This strategy generates trading signals by:
-    1. Identifying bullish and bearish SMA crossovers
-    2. Filtering signals using RSI overbought/oversold conditions
-    3. Setting stop losses based on ATR (Average True Range)
-    4. Calculating appropriate position sizes based on risk management rules
-    5. Detecting and avoiding choppy market conditions
-    
-    The strategy is designed to:
-    - Go long when the fast MA crosses above the slow MA (and RSI is not overbought)
-    - Go short when the fast MA crosses below the slow MA (and RSI is not oversold)
-    - Exit positions on opposing crossovers or extreme RSI values
-    - Implement stop losses based on ATR
-    - Avoid trading in sideways or choppy market conditions
+    1. Using hierarchical EMAs (10,20,50) for strong trend identification
+    2. Implementing smart dip buying after sharp drops followed by consolidation
+    3. Using extreme RSI values for better entry and exit timing
+    4. Applying HFT-inspired optimal entry/exit zones for precise trade execution
+    5. Maintaining strong risk management with ATR-based stop losses
     """
     
-    def __init__(self, rsi_period=14, rsi_overbought=70, rsi_oversold=30, atr_period=14, 
-                 atr_multiplier=2.0, risk_pct=1.0, adx_period=14, adx_threshold=25, 
-                 ema_short=5, ema_long=9, atr_threshold_pct=0.5, bb_period=20, bb_std=2.0):
+    def __init__(self, rsi_period=10, rsi_overbought=85, rsi_oversold=15, atr_period=10, 
+                 atr_multiplier=3.0, risk_pct=1.0, adx_period=18, adx_threshold=15, 
+                 ema_short=10, ema_medium=20, ema_long=50, atr_threshold_pct=0.5, bb_period=20, bb_std=2.0,
+                 # Dip buying parameters
+                 dip_drop_pct=0.01, dip_drop_atr_mult=1.0, dip_consol_window=6, dip_consol_atr_mult=0.7,
+                 # HFT parameters
+                 min_trade_interval=10, mean_reversion_threshold=1.5):
         """
-        Initialize the strategy with customizable parameters.
-        
-        Parameters:
-            rsi_period (int): Period for RSI calculation (default: 14 days)
-            rsi_overbought (float): RSI threshold for overbought condition (default: 70)
-            rsi_oversold (float): RSI threshold for oversold condition (default: 30)
-            atr_period (int): Period for ATR calculation (default: 14 days)
-            atr_multiplier (float): Multiplier applied to ATR for stop loss distance (default: 2.0)
-            risk_pct (float): Risk percentage per trade of total equity (default: 1.0%)
-            adx_period (int): Period for ADX calculation (default: 14 days)
-            adx_threshold (float): ADX threshold for trend strength (default: 25)
-            ema_short (int): Period for short EMA calculation (default: 20)
-            ema_long (int): Period for long EMA calculation (default: 50)
-            atr_threshold_pct (float): Minimum ATR as percentage of price for trading (default: 0.5%)
-            bb_period (int): Period for Bollinger Bands calculation (default: 20)
-            bb_std (float): Standard deviation for Bollinger Bands (default: 2.0)
+        Initialize the strategy with optimized parameters for high profitability.
         """
+        # Core parameters
         self.rsi_period = rsi_period
         self.rsi_overbought = rsi_overbought
         self.rsi_oversold = rsi_oversold
-        self.atr_period = atr_period  # ATR calculation period
-        self.atr_multiplier = atr_multiplier  # Multiplier for ATR to set stoploss
-        self.risk_pct = risk_pct  # Risk percentage per trade (1.0 means 1%)
-        
-        # New parameters for choppy market detection
+        self.atr_period = atr_period
+        self.atr_multiplier = atr_multiplier
+        self.risk_pct = risk_pct
         self.adx_period = adx_period
-        self.adx_threshold = adx_threshold  # ADX below this indicates choppy market
+        self.adx_threshold = adx_threshold
+        
+        # EMA parameters
         self.ema_short = ema_short
+        self.ema_medium = ema_medium
         self.ema_long = ema_long
-        self.atr_threshold_pct = atr_threshold_pct  # Minimum ATR % for trading
+        
+        # Volatility parameters
+        self.atr_threshold_pct = atr_threshold_pct
         self.bb_period = bb_period
         self.bb_std = bb_std
+        
+        # Dip buying parameters
+        self.dip_drop_pct = dip_drop_pct
+        self.dip_drop_atr_mult = dip_drop_atr_mult
+        self.dip_consol_window = dip_consol_window
+        self.dip_consol_atr_mult = dip_consol_atr_mult
+        
+        # HFT parameters
+        self.min_trade_interval = min_trade_interval
+        self.mean_reversion_threshold = mean_reversion_threshold
         
     def run(self, df: pd.DataFrame, equity: float = 10000.0) -> pd.DataFrame:
         """
         Execute the strategy on the provided price data.
-        
-        This is the main entry point for strategy execution. It performs two steps:
-        1. Calculates all technical indicators needed for the strategy
-        2. Generates trading signals based on those indicators
-        
-        Parameters:
-            df (pd.DataFrame): Price data containing at minimum 'open', 'high', 'low', 'close' columns
-            equity (float): Starting account equity for position sizing calculations (default: $10,000)
-            
-        Returns:
-            pd.DataFrame: The input dataframe augmented with strategy indicators, signals, and position information
         """
         df = self.calculate_indicators(df)
-        df = self.detect_choppy_market(df)  # Add choppy market detection
+        df = self.detect_market_regimes(df)
+        df = self.add_dip_buy_signals(df)
+        df = self.add_hft_components(df)
         df = self.generate_signals(df, equity)
         return df
 
     def calculate_indicators(self, df):
         """
         Calculate technical indicators required for the strategy.
-        
-        This method computes the following indicators:
-        - Fast and slow Simple Moving Averages (SMA)
-        - Relative Strength Index (RSI)
-        - Average True Range (ATR) for stop loss calculation
-        - EMAs for trend detection
-        - ADX for trend strength
-        - Bollinger Bands for range detection
-        
-        Parameters:
-            df (pd.DataFrame): Price data containing at minimum 'open', 'high', 'low', 'close' columns
-            
-        Returns:
-            pd.DataFrame: The input dataframe augmented with calculated indicators
         """
-        # Calculate fast and slow moving averages
-        df["fast_ma"] = ta.SMA(df["close"], timeperiod=10)
-        df["slow_ma"] = ta.SMA(df["close"], timeperiod=20)
+        # Primary EMAs for trend identification (based on profitable strategy)
+        df["ema_10"] = ta.EMA(df["close"], timeperiod=self.ema_short)
+        df["ema_20"] = ta.EMA(df["close"], timeperiod=self.ema_medium)
+        df["ema_50"] = ta.EMA(df["close"], timeperiod=self.ema_long)
         
-        # Calculate RSI
+        # Calculate RSI with optimized period
         df["rsi"] = ta.RSI(df["close"], timeperiod=self.rsi_period)
         
-        # Calculate ATR for stop loss
+        # Calculate ATR for stop loss and volatility measurement
         df["atr"] = ta.ATR(df["high"], df["low"], df["close"], timeperiod=self.atr_period)
         
-        # Add new indicators for choppy market detection
-        # EMAs for trend detection
-        df["ema_short"] = ta.EMA(df["close"], timeperiod=self.ema_short)
-        df["ema_long"] = ta.EMA(df["close"], timeperiod=self.ema_long)
-        
-        # ADX for trend strength
+        # Calculate ADX for trend strength
         df["adx"] = ta.ADX(df["high"], df["low"], df["close"], timeperiod=self.adx_period)
         
-        # Bollinger Bands for range detection
+        # Bollinger Bands for volatility and mean reversion
         df["bb_upper"], df["bb_middle"], df["bb_lower"] = ta.BBANDS(
             df["close"], 
             timeperiod=self.bb_period, 
@@ -147,226 +117,294 @@ class Strategy:
         # Calculate Bollinger Band width as percentage of price
         df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_middle"] * 100
         
-        # ATR as percentage of price
+        # Distance from price to Bollinger Bands (normalized)
+        df["bb_pos"] = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
+        
+        # ATR as percentage of price for volatility measurement
         df["atr_pct"] = df["atr"] / df["close"] * 100
         
-        # EMA slope (rate of change) to detect flat EMAs
-        df["ema_short_slope"] = df["ema_short"].pct_change(5) * 100  # 5-period slope
-        df["ema_long_slope"] = df["ema_long"].pct_change(5) * 100    # 5-period slope
+        # Price changes
+        df["pct_change"] = df["close"].pct_change()
+        
+        # Trend alignment (hierarchical EMAs)
+        df["bullish_alignment"] = (df["ema_10"] > df["ema_20"]) & (df["ema_20"] > df["ema_50"])
+        df["bearish_alignment"] = (df["ema_10"] < df["ema_20"]) & (df["ema_20"] < df["ema_50"])
         
         return df
     
-    def detect_choppy_market(self, df):
+    def detect_market_regimes(self, df):
         """
-        Detect choppy market conditions using multiple indicators.
-        
-        This method identifies sideways or choppy market conditions using:
-        1. Flat moving averages (EMAs with minimal slope)
-        2. Low ATR (below threshold)
-        3. RSI oscillating around 50
-        4. Low ADX (below threshold)
-        5. Contracting Bollinger Bands
-        
-        Parameters:
-            df (pd.DataFrame): Price data with calculated indicators
-            
-        Returns:
-            pd.DataFrame: The input dataframe augmented with choppy market flags
+        Detect market regimes (trending, ranging, volatile).
         """
-        # Initialize choppy market indicator (1 = choppy, 0 = trending)
-        df["is_choppy"] = 0
+        # Initialize market regime indicator 
+        df["market_regime"] = "unknown"
         
-        # Detect flat EMAs (horizontal moving averages)
-        flat_emas = (abs(df["ema_short_slope"]) < 0.2) & (abs(df["ema_long_slope"]) < 0.2)
+        # Detect trending markets
+        strong_trend = df["adx"] > self.adx_threshold
+        bullish_trend = strong_trend & df["bullish_alignment"]
+        bearish_trend = strong_trend & df["bearish_alignment"]
         
-        # Detect low volatility using ATR
-        low_volatility = df["atr_pct"] < self.atr_threshold_pct
+        # Detect ranging/choppy markets
+        flat_market = (df["adx"] < self.adx_threshold) & (df["bb_width"] < 5)
         
-        # Detect RSI around 50 (between 40-60) indicating no momentum
-        neutral_rsi = (df["rsi"] > 40) & (df["rsi"] < 60)
+        # Detect volatile markets
+        volatile_market = df["atr_pct"] > (self.atr_threshold_pct * 1.5)
         
-        # Detect weak trend using ADX
-        weak_trend = df["adx"] < self.adx_threshold
+        # Apply market regime labels
+        df.loc[bullish_trend, "market_regime"] = "bullish_trend"
+        df.loc[bearish_trend, "market_regime"] = "bearish_trend"
+        df.loc[flat_market, "market_regime"] = "ranging"
+        df.loc[volatile_market & ~(bullish_trend | bearish_trend), "market_regime"] = "volatile"
         
-        # Detect tight Bollinger Bands
-        tight_bands = df["bb_width"] < 5  # Typically ranges from 2% to 7% in normal markets
+        # Fill remaining unknowns as "undefined"
+        df.loc[df["market_regime"] == "unknown", "market_regime"] = "undefined"
         
-        # Combine the indicators to detect choppy market
-        # A market is considered choppy when at least 3 out of 5 conditions are met
-        choppy_conditions = flat_emas.astype(int) + low_volatility.astype(int) + \
-                           neutral_rsi.astype(int) + weak_trend.astype(int) + \
-                           tight_bands.astype(int)
+        return df
+    
+    def add_dip_buy_signals(self, df):
+        """
+        Add dip buying signals based on sharp drops followed by consolidation.
+        """
+        # Calculate sharp drops (like in the profitable strategy)
+        sharp_pct_drop = df["pct_change"] < -self.dip_drop_pct
+        sharp_atr_drop = df["pct_change"] < -(self.dip_drop_atr_mult * df["atr"] / df["close"].shift(1))
         
-        # Mark as choppy if at least 3 conditions are met
-        df.loc[choppy_conditions >= 3, "is_choppy"] = 1
+        # Check for consolidation after drops
+        range_N = df["high"].rolling(self.dip_consol_window).max() - df["low"].rolling(self.dip_consol_window).min()
+        consol = range_N < (self.dip_consol_atr_mult * df["atr"])
         
-        # Additional detection: Price crossing EMAs frequently
-        # Use a safer approach to count EMA crosses
-        # Create a series to track when price crosses above/below EMA
-        df["above_ema_short"] = (df["close"] > df["ema_short"]).astype(int)
+        # Identify dip buy opportunities
+        df["dip_buy"] = (sharp_pct_drop.shift(1) | sharp_atr_drop.shift(1)) & consol
         
-        # Calculate when this changes (a cross occurs)
-        df["ema_cross"] = df["above_ema_short"].diff().abs()
+        # Identify potential reversals
+        df["potential_reversal"] = ((df["close"] < df["bb_lower"]) & (df["rsi"] < 30)) | df["dip_buy"]
         
-        # Use rolling window to count crosses in the last 10 periods
-        df["ema_cross_count"] = df["ema_cross"].rolling(10).sum()
+        return df
+    
+    def add_hft_components(self, df):
+        """
+        Add HFT-inspired components for optimal entry/exit points.
+        """
+        # Optimal value band for fair price estimation
+        df["value_middle"] = df["bb_middle"]
         
-        # If there are many EMA crosses in a short window, it's choppy
-        df.loc[df["ema_cross_count"] >= 4, "is_choppy"] = 1
+        # Optimal entry/exit zones
+        entry_band_width = df["atr"] * 0.8  # Slightly wider than previous
+        df["optimal_buy_zone"] = df["value_middle"] - entry_band_width
+        df["optimal_sell_zone"] = df["value_middle"] + entry_band_width
         
-        # Clean up intermediate columns
-        df.drop(columns=["above_ema_short", "ema_cross", "ema_cross_count"], inplace=True)
+        # Mean reversion opportunities
+        df["mean_reversion_buy"] = (
+            (df["close"] < df["optimal_buy_zone"]).fillna(False) & 
+            (df["rsi"] < 30).fillna(False)
+        )
+        
+        df["mean_reversion_sell"] = (
+            (df["close"] > df["optimal_sell_zone"]).fillna(False) & 
+            (df["rsi"] > 70).fillna(False)
+        )
+        
+        # Impulse signals for quick entries/exits
+        df["impulse_up"] = (df["close"] > df["close"].shift(3)) & (df["close"] > df["ema_10"]) & (df["adx"] > self.adx_threshold)
+        df["impulse_down"] = (df["close"] < df["close"].shift(3)) & (df["close"] < df["ema_10"]) & (df["adx"] > self.adx_threshold)
+        
+        # Time since last trade placeholder
+        df["bars_since_last_trade"] = 0
         
         return df
 
     def generate_signals(self, df, equity=10000.0):
         """
-        Generate trading signals based on calculated indicators.
-        
-        This method identifies entry and exit points for trades based on SMA crossovers and RSI conditions,
-        while avoiding choppy market conditions.
-        It also sets stop loss prices and calculates position sizes.
-        
-        Parameters:
-            df (pd.DataFrame): Price data containing calculated indicators
-            equity (float): Starting account equity for position sizing calculations (default: $10,000)
-            
-        Returns:
-            pd.DataFrame: The input dataframe augmented with trading signals and position information
+        Generate optimized trading signals based on combined signals.
         """
         df["trade_type"] = TradeType.HOLD.value
         df["Position"] = 0
         df["entry_price"] = np.nan
         df["stoploss_price"] = np.nan
-        df["position_size"] = 0.0  # Add position size column
-
-        # Bullish crossover with RSI filter and NOT in choppy market
-        bullish_cross = (
-            (df["fast_ma"] > df["slow_ma"])
-            & (df["fast_ma"].shift() <= df["slow_ma"].shift())
-            & (df["Position"].shift().fillna(0) == 0)
-            & (df["rsi"] < self.rsi_overbought)  # RSI not overbought
-            & (df["is_choppy"] == 0)  # Not in choppy market
-            & (df["atr_pct"] >= self.atr_threshold_pct)  # Sufficient volatility
-            & (df["adx"] >= self.adx_threshold)  # Strong trend
+        df["position_size"] = 0.0
+        df["bars_since_last_trade"] = np.nan
+        
+        # Track time since last trade
+        last_trade_idx = -999
+        
+        for i in range(len(df)):
+            df.loc[i, "bars_since_last_trade"] = i - last_trade_idx
+        
+        # === ENTRY CONDITIONS (Strong trend + optimal timing) ===
+        
+        # Bullish entry based on profitable strategy logic
+        bullish_entry = (
+            (
+                # Strong trend with hierarchical EMAs
+                ((df["ema_10"] > df["ema_20"]) & 
+                 (df["ema_20"] > df["ema_50"]) & 
+                 (df["adx"] > self.adx_threshold)) |
+                # Dip buying opportunity
+                df["dip_buy"] |
+                # Mean reversion in strong bullish trend
+                (df["mean_reversion_buy"] & df["bullish_alignment"])
+            ) &
+            # Common filters
+            (df["Position"].shift().fillna(0) == 0) &
+            (df["bars_since_last_trade"] >= self.min_trade_interval).fillna(False)
         )
-
-        # Bearish crossover with RSI filter and NOT in choppy market
-        bearish_cross = (
-            (df["fast_ma"] < df["slow_ma"])
-            & (df["fast_ma"].shift() >= df["slow_ma"].shift())
-            & (df["Position"].shift().fillna(0) == 0)
-            & (df["rsi"] > self.rsi_oversold)  # RSI not oversold
-            & (df["is_choppy"] == 0)  # Not in choppy market
-            & (df["atr_pct"] >= self.atr_threshold_pct)  # Sufficient volatility
-            & (df["adx"] >= self.adx_threshold)  # Strong trend
+        
+        # Bearish entry with similar logic
+        bearish_entry = (
+            (
+                # Strong bearish trend
+                ((df["ema_10"] < df["ema_20"]) & 
+                 (df["ema_20"] < df["ema_50"]) & 
+                 (df["adx"] > self.adx_threshold)) |
+                # Mean reversion in strong bearish trend
+                (df["mean_reversion_sell"] & df["bearish_alignment"])
+            ) &
+            # Common filters
+            (df["Position"].shift().fillna(0) == 0) &
+            (df["bars_since_last_trade"] >= self.min_trade_interval).fillna(False)
         )
-
-        # Exit conditions: MA crossover, RSI extreme, or entering choppy market
+        
+        # === EXIT CONDITIONS (Clear trend changes or profit targets) ===
+        
+        # Long exit conditions - EMA crossover or extreme RSI
         exit_long = (
-            (df["Position"].shift().fillna(0) == 1) 
-            & ((df["fast_ma"] < df["slow_ma"]) | (df["rsi"] > self.rsi_overbought) | (df["is_choppy"] == 1))
+            (df["Position"].shift().fillna(0) == 1) & 
+            (
+                (df["ema_20"] < df["ema_50"]).fillna(False) |  # Major trend change
+                (df["rsi"] > self.rsi_overbought).fillna(False) |  # Extreme RSI
+                (df["impulse_down"] & (df["close"] < df["ema_10"])).fillna(False)  # Impulse down
+            )
         )
         
+        # Short exit conditions
         exit_short = (
-            (df["Position"].shift().fillna(0) == -1) 
-            & ((df["fast_ma"] > df["slow_ma"]) | (df["rsi"] < self.rsi_oversold) | (df["is_choppy"] == 1))
+            (df["Position"].shift().fillna(0) == -1) & 
+            (
+                (df["ema_20"] > df["ema_50"]).fillna(False) |  # Major trend change
+                (df["rsi"] < self.rsi_oversold).fillna(False) |  # Extreme RSI
+                (df["impulse_up"] & (df["close"] > df["ema_10"])).fillna(False)  # Impulse up
+            )
         )
         
-        # Stoploss conditions - Use pd.Series.combine with OR logic explicitly
-        long_stoploss = ((df["Position"].shift().fillna(0) == 1) & 
-                         (df["low"] < df["stoploss_price"].shift().fillna(0)))
-        short_stoploss = ((df["Position"].shift().fillna(0) == -1) & 
-                         (df["high"] > df["stoploss_price"].shift().fillna(0)))
+        # Stoploss conditions
+        long_stoploss = (
+            (df["Position"].shift().fillna(0) == 1) & 
+            (df["low"] < df["stoploss_price"].shift().fillna(0)).fillna(False)
+        )
         
-        # Combined exit conditions - use bitwise OR operator explicitly
+        short_stoploss = (
+            (df["Position"].shift().fillna(0) == -1) & 
+            (df["high"] > df["stoploss_price"].shift().fillna(0)).fillna(False)
+        )
+        
+        # Combined exit conditions
         exit_long_condition = exit_long | long_stoploss
         exit_short_condition = exit_short | short_stoploss
-
-        # Update bullish positions - Use .loc[] consistently
-        if not bullish_cross.empty and bullish_cross.any():
-            df.loc[bullish_cross, "Position"] = 1
-            df.loc[bullish_cross, "entry_price"] = df.loc[bullish_cross, "close"]
-            df.loc[bullish_cross, "stoploss_price"] = df.loc[bullish_cross, "close"] - (df.loc[bullish_cross, "atr"] * self.atr_multiplier)
-            # Pass entire Series for vectorized calculation
+        
+        # === APPLY ENTRY SIGNALS ===
+        
+        # Update bullish positions
+        if not bullish_entry.empty and bullish_entry.any():
+            df.loc[bullish_entry, "Position"] = 1
+            df.loc[bullish_entry, "entry_price"] = df.loc[bullish_entry, "close"]
+            
+            # Set stop loss based on ATR
+            df.loc[bullish_entry, "stoploss_price"] = (
+                df.loc[bullish_entry, "entry_price"] - 
+                df.loc[bullish_entry, "atr"] * self.atr_multiplier
+            )
+            
+            # Calculate position sizes
             position_sizes = self.calculate_position_size(
                 equity, 
-                df.loc[bullish_cross, "close"], 
-                df.loc[bullish_cross, "stoploss_price"]
+                df.loc[bullish_entry, "entry_price"], 
+                df.loc[bullish_entry, "stoploss_price"]
             )
-            df.loc[bullish_cross, "position_size"] = position_sizes
+            df.loc[bullish_entry, "position_size"] = position_sizes
+            
+            # Update last trade index
+            for idx in bullish_entry[bullish_entry].index:
+                last_trade_idx = idx
+                indices_to_update = df.index[df.index > idx]
+                if len(indices_to_update) > 0:
+                    df.loc[indices_to_update, "bars_since_last_trade"] = indices_to_update - idx
         
-        # Update bearish positions - Use .loc[] consistently
-        if not bearish_cross.empty and bearish_cross.any():
-            df.loc[bearish_cross, "Position"] = -1
-            df.loc[bearish_cross, "entry_price"] = df.loc[bearish_cross, "close"]
-            df.loc[bearish_cross, "stoploss_price"] = df.loc[bearish_cross, "close"] + (df.loc[bearish_cross, "atr"] * self.atr_multiplier)
-            # Pass entire Series for vectorized calculation
+        # Update bearish positions with similar logic
+        if not bearish_entry.empty and bearish_entry.any():
+            df.loc[bearish_entry, "Position"] = -1
+            df.loc[bearish_entry, "entry_price"] = df.loc[bearish_entry, "close"]
+            
+            df.loc[bearish_entry, "stoploss_price"] = (
+                df.loc[bearish_entry, "entry_price"] + 
+                df.loc[bearish_entry, "atr"] * self.atr_multiplier
+            )
+            
             position_sizes = self.calculate_position_size(
                 equity, 
-                df.loc[bearish_cross, "close"], 
-                df.loc[bearish_cross, "stoploss_price"]
+                df.loc[bearish_entry, "entry_price"], 
+                df.loc[bearish_entry, "stoploss_price"]
             )
-            df.loc[bearish_cross, "position_size"] = position_sizes
+            df.loc[bearish_entry, "position_size"] = position_sizes
+            
+            for idx in bearish_entry[bearish_entry].index:
+                last_trade_idx = idx
+                indices_to_update = df.index[df.index > idx]
+                if len(indices_to_update) > 0:
+                    df.loc[indices_to_update, "bars_since_last_trade"] = indices_to_update - idx
         
-        # Exit conditions - check if there are any exit conditions first
+        # Apply exit conditions
         exit_condition = exit_long_condition | exit_short_condition
         if not exit_condition.empty and exit_condition.any():
             df.loc[exit_condition, "Position"] = 0
             df.loc[exit_condition, "entry_price"] = np.nan
             df.loc[exit_condition, "stoploss_price"] = np.nan
             df.loc[exit_condition, "position_size"] = 0.0
-
-        # Forward-fill positions and entry/stoploss prices
+            
+            for idx in exit_condition[exit_condition].index:
+                last_trade_idx = idx
+                indices_to_update = df.index[df.index > idx]
+                if len(indices_to_update) > 0:
+                    df.loc[indices_to_update, "bars_since_last_trade"] = indices_to_update - idx
+        
+        # Forward-fill positions and related data
         df["Position"] = df["Position"].ffill().fillna(0)
         df["entry_price"] = df["entry_price"].ffill()
         df["stoploss_price"] = df["stoploss_price"].ffill()
         df["position_size"] = df["position_size"].ffill().fillna(0)
-
-        # Calculate position changes
+        
+        # Calculate position changes for trade type determination
         position_change = df["Position"].diff().fillna(df["Position"])
         prev_position = df["Position"].shift().fillna(0)
-
+        
         # Define trade types
         entry_long = position_change == 1
-        # Fix: Use loc for both sides of the assignment to ensure element-wise operation
         df.loc[entry_long, "trade_type"] = [
             TradeType.REVERSE_LONG.value if prev == -1 else TradeType.LONG.value 
             for prev in prev_position[entry_long]
         ]
-
+        
         entry_short = position_change == -1
-        # Fix: Use loc for both sides of the assignment to ensure element-wise operation
         df.loc[entry_short, "trade_type"] = [
             TradeType.REVERSE_SHORT.value if prev == 1 else TradeType.SHORT.value 
             for prev in prev_position[entry_short]
         ]
-
-        # The exiting positions condition might also be problematic
+        
+        # Handle exit signals
         exit_positions = (position_change != 0) & (df["Position"] == 0)
-        if not exit_positions.empty:  # First check if there are any exit positions
+        if not exit_positions.empty:
             df.loc[exit_positions, "trade_type"] = TradeType.CLOSE.value
-
+        
         # Clean up intermediate columns
         df.drop(columns=["Position"], inplace=True)
-
+        
         return df
 
     def calculate_position_size(self, equity, entry_price, stoploss_price):
         """
-        Calculate position size based on ATR and risk percentage
-        
-        Args:
-            equity: Total account equity
-            entry_price: Entry price of the trade
-            stoploss_price: Stoploss price of the trade
-            
-        Returns:
-            position_size: Number of units/shares to trade
+        Calculate position size based on risk percentage.
         """
         # Handle the case where inputs are pandas Series
         if isinstance(entry_price, pd.Series) and isinstance(stoploss_price, pd.Series):
-            # Element-wise calculations for Series
             risk_amount = equity * (self.risk_pct / 100)
             risk_per_unit = (entry_price - stoploss_price).abs()
             
