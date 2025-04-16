@@ -2,6 +2,12 @@ import talib as ta
 import pandas as pd
 import numpy as np
 from enum import Enum
+# SDK imports for backtesting platform
+import backtrader as bt
+import datetime
+import os
+import matplotlib.pyplot as plt
+from matplotlib.pyplot import figure
 
 
 class TradeType(Enum):
@@ -790,24 +796,321 @@ class Strategy:
             risk_amount = equity * (risk_pct / 100)
             risk_per_unit = (entry_price - stoploss_price).abs()
             
-            # Calculate position size only where risk_per_unit is valid
-            position_size = pd.Series(0.0, index=risk_per_unit.index)
-            valid_mask = (risk_per_unit > 0)
-            position_size.loc[valid_mask] = risk_amount.loc[valid_mask] / risk_per_unit.loc[valid_mask]
+            # Calculate position size only where risk_per_unit is valid (avoid div by zero)
+            position_size = pd.Series(1.0, index=risk_per_unit.index)  # Default to 1.0
+            valid_mask = (risk_per_unit > 0.000001)  # Small threshold to avoid near-zero
+            
+            # Only calculate where we have valid risk values
+            if valid_mask.any():
+                position_size.loc[valid_mask] = risk_amount.loc[valid_mask] / risk_per_unit.loc[valid_mask]
             
             return position_size.round(2)
         else:
             # Handle scalar NaN values
             if pd.isna(entry_price) or pd.isna(stoploss_price):
-                return 0
+                return 1  # Return default minimum position
                 
             # Scalar calculation
             risk_amount = float(equity) * (risk_pct / 100)
             risk_per_unit = abs(entry_price - stoploss_price)
             
-            # Avoid division by zero or NaN
-            if risk_per_unit <= 0:
-                return 0
+            # Avoid division by zero or very small values
+            if risk_per_unit <= 0.000001:
+                return 1  # Return minimum position
                 
             position_size = risk_amount / risk_per_unit
-            return np.round(position_size, 2)
+            return max(1, np.round(position_size, 2))  # Ensure at least 1 unit
+
+
+# SDK Integration Wrapper
+class BacktestSDKStrategy(bt.Strategy):
+    """
+    A Backtrader strategy wrapper that adapts our custom Strategy to the SDK's interface
+    """
+    
+    params = (
+        ('strategy', None),  # Our custom strategy instance
+        ('rsi_period', 8),
+        ('rsi_overbought', 80),
+        ('rsi_oversold', 20),
+        ('atr_period', 10),
+        ('atr_multiplier', 2.0),
+        ('risk_pct', 0.5),
+        ('adx_period', 14),
+        ('adx_threshold', 15),
+        ('ema_fast', 8),
+        ('ema_medium', 20),
+        ('ema_slow', 50),
+        ('ema_ultrafast', 3),
+        ('atr_threshold_pct', 0.5),
+        ('bb_period', 20),
+        ('bb_std', 2.0),
+        ('dip_drop_pct', 0.01),
+        ('dip_drop_atr_mult', 0.8),
+        ('dip_consol_window', 5),
+        ('dip_consol_atr_mult', 0.7),
+        ('max_pos_volatility_ratio', 1.5),
+        ('profit_target_r_multiple', 1.5),
+        ('partial_exit_r_multiple', 0.8),
+        ('min_trade_interval', 5),
+        ('max_risk_per_trade_pct', 0.5),
+        ('max_correlated_trades', 3),
+        ('drawdown_scaling_factor', 0.5),
+        ('max_open_risk_pct', 2.0),
+        ('trailing_stop_atr_multiple', 1.0),
+        ('time_stop_bars', 8),
+        ('breakout_lookback', 20),
+        ('breakout_atr_mult', 1.2),
+        ('recovery_mode_drawdown_pct', 10.0),
+        ('recovery_risk_factor', 0.5),
+    )
+    
+    def __init__(self):
+        # Initialize our strategy if not passed as a parameter
+        if self.params.strategy is None:
+            self.strategy = Strategy(
+                rsi_period=self.p.rsi_period,
+                rsi_overbought=self.p.rsi_overbought,
+                rsi_oversold=self.p.rsi_oversold,
+                atr_period=self.p.atr_period,
+                atr_multiplier=self.p.atr_multiplier,
+                risk_pct=self.p.risk_pct,
+                adx_period=self.p.adx_period,
+                adx_threshold=self.p.adx_threshold,
+                ema_fast=self.p.ema_fast,
+                ema_medium=self.p.ema_medium,
+                ema_slow=self.p.ema_slow,
+                ema_ultrafast=self.p.ema_ultrafast,
+                atr_threshold_pct=self.p.atr_threshold_pct,
+                bb_period=self.p.bb_period,
+                bb_std=self.p.bb_std,
+                dip_drop_pct=self.p.dip_drop_pct,
+                dip_drop_atr_mult=self.p.dip_drop_atr_mult,
+                dip_consol_window=self.p.dip_consol_window,
+                dip_consol_atr_mult=self.p.dip_consol_atr_mult,
+                max_pos_volatility_ratio=self.p.max_pos_volatility_ratio,
+                profit_target_r_multiple=self.p.profit_target_r_multiple,
+                partial_exit_r_multiple=self.p.partial_exit_r_multiple,
+                min_trade_interval=self.p.min_trade_interval,
+                max_risk_per_trade_pct=self.p.max_risk_per_trade_pct,
+                max_correlated_trades=self.p.max_correlated_trades,
+                drawdown_scaling_factor=self.p.drawdown_scaling_factor,
+                max_open_risk_pct=self.p.max_open_risk_pct,
+                trailing_stop_atr_multiple=self.p.trailing_stop_atr_multiple,
+                time_stop_bars=self.p.time_stop_bars,
+                breakout_lookback=self.p.breakout_lookback,
+                breakout_atr_mult=self.p.breakout_atr_mult,
+                recovery_mode_drawdown_pct=self.p.recovery_mode_drawdown_pct,
+                recovery_risk_factor=self.p.recovery_risk_factor,
+            )
+        else:
+            self.strategy = self.params.strategy
+        
+        # Store data for our Strategy to process
+        self.data_cache = {
+            'open': [],
+            'high': [],
+            'low': [],
+            'close': [],
+            'volume': [],
+            'datetime': []
+        }
+        
+        # Track current position and orders
+        self.position_size = 0
+        self.current_trade_type = TradeType.HOLD.value
+        self.entry_price = 0
+        self.stop_price = 0
+        
+        # Register indicators required by the SDK
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
+        self.atr = bt.indicators.ATR(self.data, period=self.p.atr_period)
+        self.ema_fast = bt.indicators.EMA(self.data.close, period=self.p.ema_fast)
+        self.ema_medium = bt.indicators.EMA(self.data.close, period=self.p.ema_medium)
+        self.ema_slow = bt.indicators.EMA(self.data.close, period=self.p.ema_slow)
+    
+    def next(self):
+        """
+        Called on each bar of data by the SDK - implements the main strategy logic
+        """
+        # Update our data cache with the latest bar
+        self.data_cache['open'].append(self.data.open[0])
+        self.data_cache['high'].append(self.data.high[0])
+        self.data_cache['low'].append(self.data.low[0])
+        self.data_cache['close'].append(self.data.close[0])
+        self.data_cache['volume'].append(self.data.volume[0])
+        self.data_cache['datetime'].append(self.data.datetime.datetime())
+        
+        # Only proceed once we have enough data
+        if len(self.data_cache['close']) < max(
+            self.p.ema_slow, self.p.breakout_lookback, self.p.bb_period
+        ) + 20:  # Add buffer for indicator calculations
+            return
+        
+        # Convert our cached data to pandas DataFrame for our Strategy
+        df = pd.DataFrame({
+            'open': self.data_cache['open'],
+            'high': self.data_cache['high'],
+            'low': self.data_cache['low'],
+            'close': self.data_cache['close'],
+            'volume': self.data_cache['volume'],
+            'datetime': self.data_cache['datetime']
+        })
+        
+        # Run our custom strategy
+        result_df = self.strategy.run(df, equity=self.broker.getvalue())
+        
+        # Get the latest trade signal
+        latest_idx = len(result_df) - 1
+        current_signal = result_df.iloc[latest_idx]['trade_type']
+        
+        # Process the signal according to the SDK interface
+        if current_signal == TradeType.LONG.value:
+            if self.position.size < 0:  # If short, close first
+                self.close()
+            # Calculate position size based on risk
+            pos_size = self.calculate_position_size(result_df.iloc[latest_idx])
+            self.buy(size=pos_size)
+            self.current_trade_type = TradeType.LONG.value
+            self.entry_price = self.data.close[0]
+            self.stop_price = result_df.iloc[latest_idx].get('stoploss_price', 0)
+            
+        elif current_signal == TradeType.SHORT.value:
+            if self.position.size > 0:  # If long, close first
+                self.close()
+            # Calculate position size based on risk
+            pos_size = self.calculate_position_size(result_df.iloc[latest_idx])
+            self.sell(size=pos_size)
+            self.current_trade_type = TradeType.SHORT.value
+            self.entry_price = self.data.close[0]
+            self.stop_price = result_df.iloc[latest_idx].get('stoploss_price', 0)
+            
+        elif current_signal == TradeType.REVERSE_LONG.value:
+            self.close()  # Close the short position
+            pos_size = self.calculate_position_size(result_df.iloc[latest_idx])
+            self.buy(size=pos_size)  # Enter long
+            self.current_trade_type = TradeType.LONG.value
+            self.entry_price = self.data.close[0]
+            self.stop_price = result_df.iloc[latest_idx].get('stoploss_price', 0)
+            
+        elif current_signal == TradeType.REVERSE_SHORT.value:
+            self.close()  # Close the long position
+            pos_size = self.calculate_position_size(result_df.iloc[latest_idx])
+            self.sell(size=pos_size)  # Enter short
+            self.current_trade_type = TradeType.SHORT.value
+            self.entry_price = self.data.close[0]
+            self.stop_price = result_df.iloc[latest_idx].get('stoploss_price', 0)
+            
+        elif current_signal == TradeType.CLOSE.value:
+            self.close()  # Close any open position
+            self.current_trade_type = TradeType.HOLD.value
+            self.entry_price = 0
+            self.stop_price = 0
+    
+    def calculate_position_size(self, row):
+        """
+        Calculate position size based on the strategy's risk parameters with zero division protection
+        """
+        if not hasattr(row, 'position_size') or pd.isna(row.position_size):
+            # Use our strategy's risk calculation if not provided in results
+            risk_amount = self.broker.getvalue() * (self.p.risk_pct / 100)
+            risk_per_unit = abs(self.data.close[0] - self.stop_price)
+            if risk_per_unit <= 0.000001:  # Consider very small values as zero too
+                return 1  # Return minimum position size if risk is too small
+            position_size = risk_amount / risk_per_unit
+            return max(1, int(position_size))  # Ensure at least 1 share
+        else:
+            # Use the position size calculated by our strategy
+            return max(1, int(row.position_size))  # Ensure at least 1 share
+
+
+def run_backtest(data_path, start_date=None, end_date=None, initial_capital=10000.0,
+                 commission=0.001, plot_results=True, **strategy_params):
+    """
+    Run a backtest using the SDK with our custom strategy
+    
+    Args:
+        data_path (str): Path to the data file in CSV format
+        start_date (str, optional): Start date in YYYY-MM-DD format
+        end_date (str, optional): End date in YYYY-MM-DD format
+        initial_capital (float): Initial capital for the backtest
+        commission (float): Commission rate
+        plot_results (bool): Whether to plot the backtest results
+        **strategy_params: Parameters to pass to the strategy
+        
+    Returns:
+        dict: A dictionary containing backtest results
+    """
+    # Initialize backtrader cerebro engine
+    cerebro = bt.Cerebro()
+    
+    # Add the strategy
+    cerebro.addstrategy(BacktestSDKStrategy, **strategy_params)
+    
+    # Load the data
+    data = bt.feeds.YahooFinanceCSVData(
+        dataname=data_path,
+        fromdate=datetime.datetime.strptime(start_date, '%Y-%m-%d') if start_date else None,
+        todate=datetime.datetime.strptime(end_date, '%Y-%m-%d') if end_date else None,
+        reverse=False
+    )
+    cerebro.adddata(data)
+    
+    # Set broker parameters
+    cerebro.broker.setcash(initial_capital)
+    cerebro.broker.setcommission(commission=commission)
+    
+    # Add analyzers
+    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+    cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+    cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
+    
+    # Run the backtest
+    print(f"Starting Portfolio Value: {cerebro.broker.getvalue():.2f}")
+    results = cerebro.run()
+    print(f"Final Portfolio Value: {cerebro.broker.getvalue():.2f}")
+    
+    # Extract results
+    strategy = results[0]
+    sharpe = strategy.analyzers.sharpe.get_analysis()
+    drawdown = strategy.analyzers.drawdown.get_analysis()
+    returns = strategy.analyzers.returns.get_analysis()
+    trades = strategy.analyzers.trades.get_analysis()
+    
+    # Print analysis
+    print(f"Sharpe Ratio: {sharpe.get('sharperatio', 0):.3f}")
+    print(f"Max Drawdown: {drawdown.get('max', {}).get('drawdown', 0):.2f}%")
+    print(f"Return: {returns.get('rtot', 0) * 100:.2f}%")
+    print(f"Total Trades: {trades.get('total', 0)}")
+    
+    # Plot results if requested
+    if plot_results:
+        figure(figsize=(15, 10), dpi=100)
+        cerebro.plot(style='candlestick')
+    
+    # Return results dictionary with safe extraction to prevent division by zero errors
+    return {
+        'sharpe': sharpe.get('sharperatio', 0) if sharpe.get('sharperatio') is not None else 0,
+        'drawdown': drawdown.get('max', {}).get('drawdown', 0) if drawdown.get('max', {}).get('drawdown') is not None else 0,
+        'return': returns.get('rtot', 0) * 100 if returns.get('rtot') is not None else 0,
+        'total_trades': trades.get('total', 0) if trades.get('total') is not None else 0,
+        'initial_value': initial_capital,
+        'final_value': cerebro.broker.getvalue()
+    }
+
+
+# Example of how to use the backtest function (can be removed in production)
+if __name__ == "__main__":
+    try:
+        results = run_backtest(
+            data_path='/home/mayank/work_space/AIMS/BITS/zelta/model/cookin/BTCUSDT_historical_data_15m.csv',
+            start_date='2020-01-01',
+            end_date='2021-12-31',
+            initial_capital=10000.0,
+            commission=0.001,
+            plot_results=True
+        )
+        print(f"Backtest Results: {results}")
+    except Exception as e:
+        print(f"Backtest error: {str(e)}")

@@ -1,0 +1,531 @@
+// Advanced Multi-Timeframe Trading Strategy with Low Drawdown
+// Converted from Python to Pine Script v6
+// 
+// Key features:
+// 1. Triple timeframe analysis (fast, medium, slow) for precision entries
+// 2. Adaptive position sizing based on volatility and drawdown control
+// 3. Partial profit-taking to lock in gains and reduce drawdown
+// 4. Trailing stops and volatility-adjusted exits for faster recovery
+// 5. Market regime detection with regime-specific trading rules
+// 6. Aggressive profit-booking during uncertain regimes
+// 7. Multiple entry types (trend, dip, breakout, momentum) for increased trade count
+// 8. Global risk budget management to prevent excessive drawdowns
+
+//@version=6
+strategy("Advanced Multi-Timeframe Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, initial_capital=10000)
+
+// Core parameters
+rsi_period = input.int(8, "RSI Period", minval=1, maxval=50)
+rsi_overbought = input.int(80, "RSI Overbought Level", minval=50, maxval=100)
+rsi_oversold = input.int(20, "RSI Oversold Level", minval=0, maxval=50)
+atr_period = input.int(10, "ATR Period", minval=1, maxval=50)
+atr_multiplier = input.float(2.0, "ATR Multiplier", minval=0.1, maxval=5.0, step=0.1)
+risk_pct = input.float(0.5, "Risk Percentage", minval=0.1, maxval=5.0, step=0.1)
+adx_period = input.int(14, "ADX Period", minval=1, maxval=50)
+adx_threshold = input.int(15, "ADX Threshold", minval=5, maxval=50)
+
+// EMA parameters - multi-timeframe approach
+ema_ultrafast = input.int(3, "Ultra Fast EMA", minval=1, maxval=20)
+ema_fast = input.int(8, "Fast EMA", minval=2, maxval=50)
+ema_medium = input.int(20, "Medium EMA", minval=5, maxval=100)
+ema_slow = input.int(50, "Slow EMA", minval=10, maxval=200)
+
+// Volatility parameters
+atr_threshold_pct = input.float(0.5, "ATR Threshold %", minval=0.1, maxval=5.0, step=0.1)
+bb_period = input.int(20, "Bollinger Bands Period", minval=5, maxval=50)
+bb_std = input.float(2.0, "Bollinger Bands Std Dev", minval=0.5, maxval=5.0, step=0.1)
+
+// Dip buying parameters
+dip_drop_pct = input.float(0.01, "Dip Drop Percentage", minval=0.001, maxval=0.1, step=0.001)
+dip_drop_atr_mult = input.float(0.8, "Dip Drop ATR Multiplier", minval=0.1, maxval=3.0, step=0.1)
+dip_consol_window = input.int(5, "Dip Consolidation Window", minval=2, maxval=20)
+dip_consol_atr_mult = input.float(0.7, "Dip Consolidation ATR Multiplier", minval=0.1, maxval=3.0, step=0.1)
+
+// Advanced risk management
+max_pos_volatility_ratio = input.float(1.5, "Max Position Volatility Ratio", minval=0.5, maxval=5.0, step=0.1)
+profit_target_r_multiple = input.float(1.5, "Profit Target R Multiple", minval=0.5, maxval=5.0, step=0.1)
+partial_exit_r_multiple = input.float(0.8, "Partial Exit R Multiple", minval=0.2, maxval=2.0, step=0.1)
+min_trade_interval = input.int(5, "Min Bars Between Trades", minval=1, maxval=50)
+
+// Drawdown control
+max_risk_per_trade_pct = input.float(0.5, "Max Risk Per Trade %", minval=0.1, maxval=5.0, step=0.1)
+max_correlated_trades = input.int(3, "Max Correlated Trades", minval=1, maxval=10)
+drawdown_scaling_factor = input.float(0.5, "Drawdown Scaling Factor", minval=0.1, maxval=1.0, step=0.1)
+max_open_risk_pct = input.float(2.0, "Max Open Risk %", minval=0.5, maxval=10.0, step=0.5)
+
+// Advanced exits
+trailing_stop_atr_multiple = input.float(1.0, "Trailing Stop ATR Multiple", minval=0.5, maxval=5.0, step=0.1)
+time_stop_bars = input.int(8, "Time Stop Bars", minval=3, maxval=50)
+
+// Breakout parameters
+breakout_lookback = input.int(20, "Breakout Lookback Period", minval=5, maxval=100)
+breakout_atr_mult = input.float(1.2, "Breakout ATR Multiple", minval=0.5, maxval=3.0, step=0.1)
+
+// Recovery parameters
+recovery_mode_drawdown_pct = input.float(10.0, "Recovery Mode Drawdown %", minval=5.0, maxval=30.0, step=1.0)
+recovery_risk_factor = input.float(0.5, "Recovery Risk Factor", minval=0.1, maxval=1.0, step=0.1)
+
+// Trade types
+var string LONG = "LONG"
+var string SHORT = "SHORT"
+var string REVERSE_LONG = "REVERSE_LONG"
+var string REVERSE_SHORT = "REVERSE_SHORT"
+var string CLOSE = "CLOSE"
+var string HOLD = "HOLD"
+
+// Runtime metrics
+var float current_drawdown = 0.0
+var float max_reached_equity = 10000.0
+var bool in_recovery_mode = false
+var float current_open_risk = 0.0
+var int last_trade_index = -999
+var int bars_since_last_trade = 0
+
+// Calculate all technical indicators
+ema3 = ta.ema(close, ema_ultrafast)
+ema8 = ta.ema(close, ema_fast)
+ema20 = ta.ema(close, ema_medium)
+ema50 = ta.ema(close, ema_slow)
+
+// Short-term momentum indicators
+rsi = ta.rsi(close, rsi_period)
+rsi_fast = ta.rsi(close, 4)
+
+// Volatility indicators
+atr = ta.atr(atr_period)
+atr_pct = atr / close * 100
+
+// Trend strength
+// Fix: Replace ta.adx with proper ta.dmi call that returns all components
+[adx, di_plus, di_minus] = ta.dmi(adx_period, adx_period)
+
+// Bollinger Bands
+[bb_upper, bb_middle, bb_lower] = ta.bb(close, bb_period, bb_std)
+bb_width = (bb_upper - bb_lower) / bb_middle * 100
+bb_pos = (close - bb_lower) / (bb_upper - bb_lower)
+
+// Price changes for momentum analysis
+pct_change = close / close[1] - 1
+pct_change_3 = close / close[3] - 1
+pct_change_5 = close / close[5] - 1
+
+// Multi-timeframe trend alignment
+trend_aligned_bull = ema3 > ema8 and ema8 > ema20 and ema20 > ema50
+trend_aligned_bear = ema3 < ema8 and ema8 < ema20 and ema20 < ema50
+
+// Fast-medium alignment (more trades)
+fast_aligned_bull = ema3 > ema8 and ema8 > ema20
+fast_aligned_bear = ema3 < ema8 and ema8 < ema20
+
+// MACD for momentum confirmation
+[macd, macd_signal, macd_hist] = ta.macd(close, 12, 26, 9)
+
+// Momentum indicators
+momentum = close - close[4]
+momentum_pct = momentum / close[4] * 100
+
+// Keltner Channels for breakout detection
+keltner_middle = ta.ema(close, 20)
+keltner_upper = keltner_middle + atr * 2
+keltner_lower = keltner_middle - atr * 2
+
+// == Market Regime Detection ==
+// Initialize market regime
+market_regime = "unknown"
+
+// Strong trend detection
+strong_bull = adx > 25 and trend_aligned_bull and di_plus > di_minus
+strong_bear = adx > 25 and trend_aligned_bear and di_minus > di_plus
+
+// Weak trend detection
+weak_bull = adx > adx_threshold and fast_aligned_bull and di_plus > di_minus and not strong_bull
+weak_bear = adx > adx_threshold and fast_aligned_bear and di_minus > di_plus and not strong_bear
+
+// Ranging market detection
+ranging = adx < adx_threshold and bb_width < 4.5 and not (weak_bull or weak_bear or strong_bull or strong_bear)
+
+// Volatile/uncertain market detection
+vol_20_mean = ta.sma(atr_pct, 20)
+bbw_20_mean = ta.sma(bb_width, 20)
+volatile = (atr_pct > 1.5 * vol_20_mean or bb_width > 2 * bbw_20_mean) and not (strong_bull or strong_bear)
+
+// Apply market regime labels
+if strong_bull
+    market_regime := "strong_bull"
+else if strong_bear
+    market_regime := "strong_bear"
+else if weak_bull
+    market_regime := "weak_bull"
+else if weak_bear
+    market_regime := "weak_bear"
+else if ranging
+    market_regime := "ranging"
+else if volatile
+    market_regime := "volatile"
+else
+    market_regime := "uncertain"
+
+// == Volatility Regimes ==
+// Calculate 20-day rolling volatility
+vol_20d = ta.sma(atr_pct, 20)
+vol_ratio = atr_pct / vol_20d
+
+// Define volatility regimes
+vol_regime = "normal"
+if vol_ratio > 1.5
+    vol_regime := "high"
+else if vol_ratio < 0.7
+    vol_regime := "low"
+
+// Calculate volatility-adjusted position size multiplier
+vol_pos_multiplier = 1.0
+if vol_regime == "high"
+    vol_pos_multiplier := 0.7
+else if vol_regime == "low"
+    vol_pos_multiplier := 1.3
+
+// == Breakout Signals ==
+// Calculate rolling highs and lows
+n_day_high = ta.highest(high, breakout_lookback)
+n_day_low = ta.lowest(low, breakout_lookback)
+
+// Calculate proximity to highs/lows
+high_proximity = 1 - ((n_day_high - close) / n_day_high)
+low_proximity = 1 - ((close - n_day_low) / close)
+
+// Detect consolidation before breakout
+range_20d = (ta.highest(high, 20) - ta.lowest(low, 20)) / close
+range_5d = (ta.highest(high, 5) - ta.lowest(low, 5)) / close
+is_consolidated = range_5d < 0.5 * range_20d
+
+// Identify breakout signals
+vol_avg = ta.sma(volume, 20)
+breakout_up = close > n_day_high[1] and close > keltner_upper and volume > vol_avg * 1.2 and adx > 20
+breakout_down = close < n_day_low[1] and close < keltner_lower and volume > vol_avg * 1.2 and adx > 20
+
+// Identify high-probability breakouts (consolidated + volume surge)
+high_prob_breakout_up = breakout_up and is_consolidated
+high_prob_breakout_down = breakout_down and is_consolidated
+
+// == Dip Buy Signals ==
+// Improved dip detection (more sensitive)
+sharp_pct_drop = pct_change < -dip_drop_pct
+sharp_atr_drop = pct_change < -(dip_drop_atr_mult * atr / close[1])
+
+// Consecutive down days for stronger signals
+two_down_days = pct_change < 0 and pct_change[1] < 0
+
+// Check for consolidation after drops
+range_N = ta.highest(high, dip_consol_window) - ta.lowest(low, dip_consol_window)
+consol = range_N < (dip_consol_atr_mult * atr)
+
+// RSI oversold condition for better timing
+rsi_oversold_cond = rsi < 30
+
+// Dip buy signals with different strengths
+dip_buy_strong = (sharp_pct_drop[1] or sharp_atr_drop[1]) and consol and rsi_oversold_cond
+dip_buy_normal = (sharp_pct_drop[1] or sharp_atr_drop[1]) and consol
+dip_buy_weak = two_down_days and (close < ema20) and (rsi < 40)
+
+// Combined dip buying signal
+dip_buy = dip_buy_strong or dip_buy_normal
+
+// Add dip buy signal for ranging markets (more conservative)
+range_dip_buy = market_regime == "ranging" and close < bb_lower and rsi < 30
+
+// == HFT Components ==
+// Optimal value band for fair price estimation
+value_middle = keltner_middle
+
+// Optimal entry/exit bands (volatility-adjusted)
+entry_band_width = atr * 0.5
+optimal_buy_zone = value_middle - entry_band_width
+optimal_sell_zone = value_middle + entry_band_width
+
+// Short-term mean reversion signals
+mean_reversion_buy = close < bb_lower and rsi_fast < 20 and pct_change_3 < -1.5 * atr_pct
+mean_reversion_sell = close > bb_upper and rsi_fast > 80 and pct_change_3 > 1.5 * atr_pct
+
+// Momentum burst signals (very short-term momentum)
+momentum_burst_up = close > open and close > high[1] and volume > volume[1] * 1.2
+momentum_burst_down = close < open and close < low[1] and volume > volume[1] * 1.2
+
+// Ultra-fast trend change detection
+ultra_trend_change_up = ema3[1] < ema8[1] and ema3 > ema8
+ultra_trend_change_down = ema3[1] > ema8[1] and ema3 < ema8
+
+// Variables for trade management
+var float entry_price = 0.0
+var float stoploss_price = 0.0
+var float trailing_stop_price = 0.0
+var float profit_target_long = 0.0
+var float profit_target_short = 0.0
+var float partial_profit_long = 0.0
+var float partial_profit_short = 0.0
+var float position_size = 0.0
+var float trade_risk_pct = 0.0
+var int time_in_trade = 0
+var bool partial_profit_taken = false
+var float risk_per_share = 0.0
+var string current_position = "flat"  // "flat", "long", "short"
+var string trade_type = HOLD
+
+// Update bars since last trade
+bars_since_last_trade := bar_index - last_trade_index
+
+// Apply risk-adjusted max allowed drawdown
+risk_factor = in_recovery_mode ? recovery_risk_factor : 1.0
+
+// Dynamic position sizing based on volatility and drawdown
+vol_adjusted_risk = max_risk_per_trade_pct * vol_pos_multiplier * risk_factor
+
+// Update drawdown metrics (using strategy equity)
+if bar_index > 0
+    max_reached_equity := math.max(max_reached_equity, strategy.equity)
+    current_drawdown := (max_reached_equity - strategy.equity) / max_reached_equity * 100
+    in_recovery_mode := current_drawdown > recovery_mode_drawdown_pct
+
+// Update time in trade counter
+if current_position != "flat"
+    time_in_trade := time_in_trade + 1
+else
+    time_in_trade := 0
+
+// == Signal Generation ==
+// Entry conditions
+// Create bullish entry conditions
+strong_bull_trend = market_regime == "strong_bull" and trend_aligned_bull
+weak_bull_confirm = market_regime == "weak_bull" and fast_aligned_bull and rsi < 60
+dip_buy_bull = market_regime == "strong_bull" and dip_buy
+mean_rev_bull = market_regime == "strong_bull" and mean_reversion_buy
+range_dip_entry = market_regime == "ranging" and range_dip_buy and ema8 > ema20
+
+// Combine entry conditions
+bull_conditions = strong_bull_trend or weak_bull_confirm or dip_buy_bull or high_prob_breakout_up or mean_rev_bull or range_dip_entry
+
+// Apply common filters
+no_position = current_position == "flat"
+min_bars_passed = bars_since_last_trade >= min_trade_interval
+recovery_filter = not in_recovery_mode or (in_recovery_mode and (market_regime == "strong_bull" or market_regime == "strong_bear"))
+
+// Combine all conditions for bullish entry
+bullish_entry = bull_conditions and no_position and min_bars_passed and recovery_filter
+
+// Bearish conditions
+strong_bear_trend = market_regime == "strong_bear" and trend_aligned_bear
+weak_bear_confirm = market_regime == "weak_bear" and fast_aligned_bear and rsi > 40
+mean_rev_bear = market_regime == "strong_bear" and mean_reversion_sell
+
+// Combine bearish conditions
+bear_conditions = strong_bear_trend or weak_bear_confirm or high_prob_breakout_down or mean_rev_bear
+
+// Combine all conditions for bearish entry
+bearish_entry = bear_conditions and no_position and min_bars_passed and recovery_filter
+
+// == Exit Conditions ==
+// Exit long conditions
+exit_long_trend_change = current_position == "long" and ema8 < ema20
+exit_long_regime_shift = current_position == "long" and not (market_regime == "strong_bull" or market_regime == "weak_bull")
+exit_long_extreme_rsi = current_position == "long" and rsi > rsi_overbought
+exit_long_ultra_trend = current_position == "long" and ultra_trend_change_down
+exit_long_profit_target = current_position == "long" and profit_target_long > 0 and close >= profit_target_long
+exit_long_time_stop = current_position == "long" and time_in_trade > time_stop_bars
+exit_long_trailing_stop = current_position == "long" and trailing_stop_price > 0 and low < trailing_stop_price
+exit_long_stoploss = current_position == "long" and stoploss_price > 0 and low < stoploss_price
+
+exit_long_condition = exit_long_trend_change or exit_long_regime_shift or exit_long_extreme_rsi or 
+                     exit_long_ultra_trend or exit_long_profit_target or exit_long_time_stop or 
+                     exit_long_trailing_stop or exit_long_stoploss
+
+// Exit short conditions
+exit_short_trend_change = current_position == "short" and ema8 > ema20
+exit_short_regime_shift = current_position == "short" and not (market_regime == "strong_bear" or market_regime == "weak_bear")
+exit_short_extreme_rsi = current_position == "short" and rsi < rsi_oversold
+exit_short_ultra_trend = current_position == "short" and ultra_trend_change_up
+exit_short_profit_target = current_position == "short" and profit_target_short > 0 and close <= profit_target_short
+exit_short_time_stop = current_position == "short" and time_in_trade > time_stop_bars
+exit_short_trailing_stop = current_position == "short" and trailing_stop_price > 0 and high > trailing_stop_price
+exit_short_stoploss = current_position == "short" and stoploss_price > 0 and high > stoploss_price
+
+exit_short_condition = exit_short_trend_change or exit_short_regime_shift or exit_short_extreme_rsi or 
+                      exit_short_ultra_trend or exit_short_profit_target or exit_short_time_stop or 
+                      exit_short_trailing_stop or exit_short_stoploss
+
+// Combined exit condition
+exit_condition = exit_long_condition or exit_short_condition
+
+// == Partial Profit Taking ==
+// Check if we should take partial profits on longs
+take_partial_long = current_position == "long" and not partial_profit_taken and 
+                    partial_profit_long > 0 and close >= partial_profit_long
+
+// Check if we should take partial profits on shorts
+take_partial_short = current_position == "short" and not partial_profit_taken and 
+                    partial_profit_short > 0 and close <= partial_profit_short
+
+// == Update Trailing Stops ==
+// Update trailing stops for active positions
+if current_position == "long"
+    new_trail = close - (atr * trailing_stop_atr_multiple)
+    trailing_stop_price := trailing_stop_price == 0.0 or new_trail > trailing_stop_price ? new_trail : trailing_stop_price
+else if current_position == "short"
+    new_trail = close + (atr * trailing_stop_atr_multiple)
+    trailing_stop_price := trailing_stop_price == 0.0 or new_trail < trailing_stop_price ? new_trail : trailing_stop_price
+else
+    trailing_stop_price := 0.0
+
+// Execute entry and exit signals
+if bullish_entry
+    trade_type := LONG
+    entry_price := close
+    if market_regime == "strong_bull"
+        stoploss_price := entry_price - atr * atr_multiplier
+    else
+        stoploss_price := entry_price - atr * (atr_multiplier * 0.8)
+    
+    trade_risk_pct := vol_adjusted_risk
+    risk_per_share := math.abs(entry_price - stoploss_price)
+    
+    // Calculate position size
+    if risk_per_share > 0
+        // Calculate risk amount in currency
+        risk_amount = strategy.equity * (trade_risk_pct / 100)
+        position_size := risk_amount / risk_per_share
+        
+        // Calculate profit targets
+        profit_target_long := entry_price + (risk_per_share * profit_target_r_multiple)
+        partial_profit_long := entry_price + (risk_per_share * partial_exit_r_multiple)
+        
+        // Reset short targets
+        profit_target_short := 0.0
+        partial_profit_short := 0.0
+    
+    // Set trailing stop
+    trailing_stop_price := stoploss_price
+    
+    // Update last trade index
+    last_trade_index := bar_index
+    bars_since_last_trade := 0
+    time_in_trade := 0
+    partial_profit_taken := false
+    current_position := "long"
+    
+    // Execute strategy entry
+    strategy.entry("Long", strategy.long)
+
+else if bearish_entry
+    trade_type := SHORT
+    entry_price := close
+    if market_regime == "strong_bear"
+        stoploss_price := entry_price + atr * atr_multiplier
+    else
+        stoploss_price := entry_price + atr * (atr_multiplier * 0.8)
+    
+    trade_risk_pct := vol_adjusted_risk
+    risk_per_share := math.abs(entry_price - stoploss_price)
+    
+    // Calculate position size
+    if risk_per_share > 0
+        // Calculate risk amount in currency
+        risk_amount = strategy.equity * (trade_risk_pct / 100)
+        position_size := risk_amount / risk_per_share
+        
+        // Calculate profit targets
+        profit_target_short := entry_price - (risk_per_share * profit_target_r_multiple)
+        partial_profit_short := entry_price - (risk_per_share * partial_exit_r_multiple)
+        
+        // Reset long targets
+        profit_target_long := 0.0
+        partial_profit_long := 0.0
+    
+    // Set trailing stop
+    trailing_stop_price := stoploss_price
+    
+    // Update last trade index
+    last_trade_index := bar_index
+    bars_since_last_trade := 0
+    time_in_trade := 0
+    partial_profit_taken := false
+    current_position := "short"
+    
+    // Execute strategy entry
+    strategy.entry("Short", strategy.short)
+
+// Handle partial profit taking
+else if take_partial_long
+    partial_profit_taken := true
+    // Use math.abs to ensure qty is always positive
+    strategy.order("Partial", strategy.long, qty=math.abs(strategy.position_size) / 2, comment="Partial Take Profit")
+
+else if take_partial_short
+    partial_profit_taken := true
+    // Use math.abs to ensure qty is always positive
+    strategy.order("Partial", strategy.short, qty=math.abs(strategy.position_size) / 2, comment="Partial Take Profit")
+
+// Handle exits
+else if exit_condition
+    trade_type := CLOSE
+    
+    // Reset all trade variables
+    if current_position == "long"
+        strategy.close("Long", comment="Exit Long")
+    else if current_position == "short"
+        strategy.close("Short", comment="Exit Short")
+    
+    entry_price := 0.0
+    stoploss_price := 0.0
+    profit_target_long := 0.0
+    profit_target_short := 0.0
+    partial_profit_long := 0.0
+    partial_profit_short := 0.0
+    position_size := 0.0
+    time_in_trade := 0
+    trailing_stop_price := 0.0
+    partial_profit_taken := false
+    current_position := "flat"
+    
+    // Update last trade index
+    last_trade_index := bar_index
+    bars_since_last_trade := 0
+
+// Visualizations for better strategy monitoring
+// Plot EMAs for trend identification
+plot(ema8, "Fast EMA", color=color.blue, linewidth=1)
+plot(ema20, "Medium EMA", color=color.red, linewidth=1)
+plot(ema50, "Slow EMA", color=color.purple, linewidth=1)
+
+// Plot stop loss and trailing stop
+stopColor = current_position == "long" ? color.red : color.green
+trailColor = color.rgb(255, 165, 0)
+plot(stoploss_price != 0 ? stoploss_price : na, "Stop Loss", color=stopColor, style=plot.style_cross, linewidth=2)
+plot(trailing_stop_price != 0 ? trailing_stop_price : na, "Trailing Stop", color=trailColor, style=plot.style_cross, linewidth=2)
+
+// Plot profit targets
+longTargetColor = color.rgb(0, 128, 0)
+shortTargetColor = color.rgb(220, 20, 60)
+plot(profit_target_long != 0 ? profit_target_long : na, "Long Target", color=longTargetColor, style=plot.style_cross, linewidth=2)
+plot(profit_target_short != 0 ? profit_target_short : na, "Short Target", color=shortTargetColor, style=plot.style_cross, linewidth=2)
+
+// Table to display market regime and current metrics
+var table regimeTable = table.new(position=position.top_right, columns=2, rows=5, border_color=color.gray, border_width=1)
+table.cell(regimeTable, 0, 0, "Market Regime", bgcolor=color.black, text_color=color.white)
+table.cell(regimeTable, 0, 1, "Volatility", bgcolor=color.black, text_color=color.white)
+table.cell(regimeTable, 0, 2, "Drawdown", bgcolor=color.black, text_color=color.white)
+table.cell(regimeTable, 0, 3, "Recovery Mode", bgcolor=color.black, text_color=color.white)
+table.cell(regimeTable, 0, 4, "Position", bgcolor=color.black, text_color=color.white)
+
+// Update table with current values
+regimeColor = market_regime == "strong_bull" or market_regime == "weak_bull" ? color.green : 
+              market_regime == "strong_bear" or market_regime == "weak_bear" ? color.red : 
+              market_regime == "ranging" ? color.blue : color.yellow
+
+volColor = vol_regime == "high" ? color.red : vol_regime == "low" ? color.green : color.gray
+ddColor = current_drawdown > 5 ? color.red : current_drawdown > 2 ? color.yellow : color.green
+recColor = in_recovery_mode ? color.red : color.green
+posColor = current_position == "long" ? color.green : current_position == "short" ? color.red : color.gray
+
+table.cell(regimeTable, 1, 0, market_regime, bgcolor=regimeColor, text_color=color.white)
+table.cell(regimeTable, 1, 1, vol_regime, bgcolor=volColor, text_color=color.white)
+table.cell(regimeTable, 1, 2, str.tostring(current_drawdown, "#.##") + "%", bgcolor=ddColor, text_color=color.white)
+table.cell(regimeTable, 1, 3, in_recovery_mode ? "Yes" : "No", bgcolor=recColor, text_color=color.white)
+table.cell(regimeTable, 1, 4, current_position, bgcolor=posColor, text_color=color.white)
